@@ -34,15 +34,18 @@ function checkPageAndThenScheduleNext(minInterval, maxInterval) {
     const tabId = tabs[0].id;
     
     chrome.storage.local.get('keywords', (result) => {
-      const rawKeywordsString = result.keywords || '';
-      const keywordGroupsForOr = rawKeywordsString.split(',').map(k => k.trim()).filter(Boolean);
+      const keywords = result.keywords || { a: '', b: '', c: '' };
       
-      if (keywordGroupsForOr.length === 0) return;
+      if (!keywords.a && !keywords.c) {
+          console.log("未設定有效關鍵字，等待下一次刷新...");
+          scheduleNextRefresh(tabId, minInterval, maxInterval);
+          return;
+      }
 
       chrome.scripting.executeScript({
         target: { tabId: tabId },
         func: extractAndSearchVisibleText,
-        args: [keywordGroupsForOr]
+        args: [keywords]
       }, (injectionResults) => {
         if (chrome.runtime.lastError) {
             console.warn(`腳本注入失敗: ${chrome.runtime.lastError.message}。將在隨機延遲後重試...`);
@@ -86,68 +89,90 @@ function scheduleNextRefresh(tabId, min, max) {
   }, randomDelay);
 }
 
-function extractAndSearchVisibleText(keywordGroupsForOr, isDebug = false) {
-    const parsedKeywordGroups = keywordGroupsForOr.map(group => 
-        group.split('&').map(k => k.trim()).filter(Boolean)
-    );
+function extractAndSearchVisibleText(keywords, isDebug = false) {
+    const { a, b, c } = keywords;
 
-    const allTexts = [];
-
-    const isElementVisible = (el) => {
-        if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) return false;
-        const style = window.getComputedStyle(el);
-        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    // --- 步驟一：生成目標字串清單 (邏輯不變) ---
+    const targetStrings = [];
+    const parseKeyword = (kw) => {
+        const match = kw.match(/^([a-zA-Z\s]*)(\d+)$/);
+        if (match) return { prefix: match[1] || '', num: parseInt(match[2], 10) };
+        return null;
     };
-
-    const traverse = (node) => {
-        if (node.nodeType === Node.ELEMENT_NODE && !isElementVisible(node)) return;
-        if (node.nodeType === Node.TEXT_NODE) {
-            const text = node.textContent.trim();
-            if (text) allTexts.push(text);
+    const parsedA = parseKeyword(a);
+    const parsedB = parseKeyword(b);
+    if (a && b && parsedA && parsedB && parsedA.prefix === parsedB.prefix) {
+        const prefix = parsedA.prefix;
+        for (let i = parsedA.num; i <= parsedB.num; i++) {
+            targetStrings.push(`${prefix}${i}${c}`);
         }
+    } else if (a) {
+        targetStrings.push(`${a}${c}`);
+    } else if (c) {
+        targetStrings.push(c);
+    }
+    
+    // --- 步驟二：全新的「深度優先」遍歷與即時搜尋邏輯 ---
+    const traverseAndSearch = (node) => {
         if (node.nodeType === Node.ELEMENT_NODE) {
-            for (const child of node.childNodes) traverse(child);
-            if (node.shadowRoot) {
-                for (const child of node.shadowRoot.childNodes) traverse(child);
+            // 1. 優先深入子節點和 Shadow DOM 進行搜尋
+            for (const child of node.childNodes) {
+                const result = traverseAndSearch(child);
+                if (result) return result; // 如果子節點已找到，立刻返回，不再檢查當前節點
             }
-        }
-    };
-
-    const isKeywordMatch = (textBlock, keyword) => {
-        const rangeMatch = keyword.match(/^([a-zA-Z]*)(\d+)~([a-zA-Z]*)(\d+)$/);
-        if (rangeMatch) {
-            const prefix1 = rangeMatch[1] || '';
-            const startNum = parseInt(rangeMatch[2], 10);
-            const prefix2 = rangeMatch[3] || prefix1;
-            const endNum = parseInt(rangeMatch[4], 10);
-            const regex = new RegExp(`(${prefix1}|${prefix2})(\\d+)`, 'g');
-            let match;
-            while ((match = regex.exec(textBlock)) !== null) {
-                const numInText = parseInt(match[2], 10);
-                if (numInText >= startNum && numInText <= endNum) {
-                    return true;
+            if (node.shadowRoot) {
+                for (const child of node.shadowRoot.childNodes) {
+                    const result = traverseAndSearch(child);
+                    if (result) return result;
                 }
             }
-            return false;
-        } else {
-            return textBlock.includes(keyword);
-        }
-    };
 
-    traverse(document.body);
-    if (isDebug) return allTexts.join(' ||| ');
-
-    for (const textBlock of allTexts) {
-        for (const andGroup of parsedKeywordGroups) {
-            const allKeywordsInGroupFound = andGroup.every(keyword => isKeywordMatch(textBlock, keyword));
-            if (allKeywordsInGroupFound) {
-                return textBlock;
+            // 2. 如果所有子節點都沒找到，再檢查當前節點本身
+            const style = window.getComputedStyle(node);
+            if (style.display !== 'none' && style.visibility !== 'hidden' && parseFloat(style.opacity) > 0.1) {
+                // 使用 textContent 來獲取最純粹的文字，避免子元素的可見性干擾
+                const nodeText = node.textContent;
+                if (nodeText && nodeText.trim()) {
+                    // 將文字清理乾淨，方便比對
+                    const cleanTextBlock = nodeText.trim().replace(/\s+/g, ' ');
+                    for (const target of targetStrings) {
+                        if (cleanTextBlock.includes(target)) {
+                            // 找到了！返回這個節點的文字，這是我們能找到的最小範圍
+                            return cleanTextBlock; 
+                        }
+                    }
+                }
             }
         }
+        return null; // 在此路徑上未找到
+    };
+
+    // --- 除錯模式 ---
+    if (isDebug) {
+        // ... 除錯模式邏輯保持不變，但我們可以讓它更清晰 ...
+        const allTextBlocks = new Set();
+        const collectAll = (node) => {
+             if (node.nodeType === Node.ELEMENT_NODE) {
+                const style = window.getComputedStyle(node);
+                if (style.display !== 'none' && style.visibility !== 'hidden') {
+                    // 只收集沒有子元素的節點的文字，或者葉子節點的父節點
+                    if (node.children.length === 0 && node.textContent.trim()) {
+                        allTextBlocks.add(node.textContent.trim().replace(/\s+/g, ' '));
+                    }
+                    for (const child of node.childNodes) collectAll(child);
+                    if (node.shadowRoot) for (const child of node.shadowRoot.childNodes) collectAll(child);
+                }
+            }
+        };
+        collectAll(document.body);
+        console.log("--- 🔎 將要尋找的目標清單 ---");
+        console.log(targetStrings);
+        console.log("--- ✅ 擴充功能看到的『最小單位』可見文字 ---");
+        return Array.from(allTextBlocks).join(' ||| ');
     }
-    return null;
+
+    // --- 步驟三：啟動搜尋 ---
+    return traverseAndSearch(document.body);
 }
 
 function runDebugExtraction() {
@@ -157,7 +182,7 @@ function runDebugExtraction() {
         chrome.scripting.executeScript({
             target: { tabId: tabId },
             func: extractAndSearchVisibleText,
-            args: [[], true]
+            args: [{ a: '', b: '', c: '' }, true] // 傳入空物件和 debug 標記
         }, (injectionResults) => {
             if (chrome.runtime.lastError) { console.error("腳本注入失敗:", chrome.runtime.lastError.message); return; }
             if (injectionResults && injectionResults[0]) {

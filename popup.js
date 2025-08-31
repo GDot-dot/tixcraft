@@ -1,41 +1,47 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const keywordsInput = document.getElementById('keywords');
+  const keywordAInput = document.getElementById('keyword-a');
+  const keywordBInput = document.getElementById('keyword-b');
+  const keywordCInput = document.getElementById('keyword-c');
   const minIntervalInput = document.getElementById('min-interval');
   const maxIntervalInput = document.getElementById('max-interval');
   const startBtn = document.getElementById('start-btn');
   const stopBtn = document.getElementById('stop-btn');
   const debugBtn = document.getElementById('debug-btn');
 
-  // 載入已儲存的設定
   chrome.storage.local.get(['keywords', 'minInterval', 'maxInterval'], (result) => {
-    if (result.keywords) keywordsInput.value = result.keywords;
+    if (result.keywords) {
+      keywordAInput.value = result.keywords.a || '';
+      keywordBInput.value = result.keywords.b || '';
+      keywordCInput.value = result.keywords.c || '';
+    }
     if (result.minInterval) minIntervalInput.value = result.minInterval;
     if (result.maxInterval) maxIntervalInput.value = result.maxInterval;
   });
 
   startBtn.addEventListener('click', () => {
-    const keywords = keywordsInput.value;
+    const keywords = {
+      a: keywordAInput.value.trim(),
+      b: keywordBInput.value.trim(),
+      c: keywordCInput.value.trim()
+    };
     const minInterval = parseFloat(minIntervalInput.value);
     const maxInterval = parseFloat(maxIntervalInput.value);
 
-    // 驗證輸入
-    if (!keywords || !minInterval || !maxInterval) {
-      alert('請輸入有效的關鍵字和時間範圍！');
+    if (!keywords.a && !keywords.c) {
+      alert('請至少輸入「主要關鍵字 (A)」或「次要關鍵字 (C)」！');
       return;
     }
-    if (minInterval >= maxInterval) {
-      alert('最小秒數必須小於最大秒數！');
-      return;
+    if ((keywords.b && !keywords.a)) {
+        alert('輸入「範圍結束 (B)」時，必須同時輸入「主要關鍵字 (A)」。');
+        return;
     }
-    if (minInterval < 1) {
-      alert('最小秒數建議大於或等於 1 秒，以避免被網站封鎖。');
+    if (!minInterval || !maxInterval || minInterval >= maxInterval) {
+      alert('請設定有效的刷新時間範圍！');
       return;
     }
 
-    // 儲存設定
     chrome.storage.local.set({ keywords, minInterval, maxInterval });
 
-    // 傳送訊息給 background.js 開始監控
     chrome.runtime.sendMessage({
       command: 'start',
       data: { minInterval, maxInterval }

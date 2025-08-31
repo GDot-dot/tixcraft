@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "網頁智慧監控器",
-  "version": "1.2",
-  "description": "自動刷新頁面，並使用複合式條件監控指定的關鍵字。",
+  "version": "2.0",
+  "description": "使用直觀的條件設定，自動刷新並監控頁面指定文字。",
   "permissions": [
     "storage",
     "tabs",
